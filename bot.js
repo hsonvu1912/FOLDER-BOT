@@ -1,15 +1,28 @@
 const {
-  Client, GatewayIntentBits,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  SlashCommandBuilder, EmbedBuilder
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
 } = require('discord.js');
 
 const { organize, flatten } = require('./drive');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+function formatTrashFailed(trashFailed) {
+  if (!trashFailed?.length) return '';
+  const top = trashFailed.slice(0, 5)
+    .map((x) => `- ${x.name} (${x.reason})`)
+    .join('\n');
+  const more = trashFailed.length > 5 ? `\n… và ${trashFailed.length - 5} folder khác` : '';
+  return `\n\nFolder không trash được (top 5):\n${top}${more}`;
+}
+
 client.on('interactionCreate', async (itx) => {
   try {
+    // Slash commands
     if (itx.isChatInputCommand()) {
       if (itx.commandName === 'drive-organize') {
         const folder = itx.options.getString('folder', true);
@@ -30,17 +43,17 @@ client.on('interactionCreate', async (itx) => {
 
         if (mode === 'dry') return itx.editReply({ embeds: [e] });
 
+        e.addFields(
+          { name: 'Đã chuyển', value: String(res.movedCount), inline: true },
+          { name: 'Folder mới tạo', value: String(res.createdFolderCount), inline: true }
+        );
+
         const folderId = res.summary.folderId;
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
             .setCustomId(`drive_flatten:${folderId}`)
             .setLabel('Undo: Kéo file ra ngoài + dọn folder trống')
             .setStyle(ButtonStyle.Danger)
-        );
-
-        e.addFields(
-          { name: 'Đã chuyển', value: String(res.movedCount), inline: true },
-          { name: 'Folder mới tạo', value: String(res.createdFolderCount), inline: true }
         );
 
         return itx.editReply({ embeds: [e], components: [row] });
@@ -61,19 +74,27 @@ client.on('interactionCreate', async (itx) => {
               `DRY RUN - UNDO/FLATTEN\n` +
               `Folder: ${res.rootId}\n` +
               `Subfolder sẽ xử lý: ${res.folderCount}\n` +
-              `File sẽ kéo ra: ${res.fileCount}`
+              `File sẽ kéo ra: ${res.fileCount}`,
           });
         }
 
-        return itx.editReply({
-          content:
-            `UNDO/FLATTEN xong\n` +
-            `Đã kéo ra: **${res.moved}** | Lỗi: **${res.failed}**\n` +
-            `Folder đưa vào thùng rác: **${res.trashedFolders}** | Giữ lại: **${res.keptFolders}**`
-        });
+        let content =
+          `UNDO/FLATTEN xong\n` +
+          `Đã kéo ra: **${res.moved}** | Lỗi: **${res.failed}**\n` +
+          `Folder đưa vào thùng rác: **${res.trashedFolders}** | Giữ lại: **${res.keptFolders}**`;
+
+        content += formatTrashFailed(res.trashFailed);
+
+        // Gợi ý nếu fail do permission
+        if (res.trashFailed?.some(x => /insufficient|permission|forbidden|cannot/i.test(x.reason))) {
+          content += `\n\nGợi ý: Nếu folder nằm trong Shared Drive, service account thường cần quyền cao hơn (Manager/Organizer) để xoá/trash folder.`;
+        }
+
+        return itx.editReply({ content });
       }
     }
 
+    // Button Undo from organize result
     if (itx.isButton()) {
       if (itx.customId.startsWith('drive_flatten:')) {
         const folderId = itx.customId.split(':')[1];
@@ -82,12 +103,18 @@ client.on('interactionCreate', async (itx) => {
 
         const res = await flatten(folderId, { mode: 'run', recursive: false });
 
-        return itx.editReply({
-          content:
-            `Undo (flatten) xong\n` +
-            `Đã kéo ra: **${res.moved}** | Lỗi: **${res.failed}**\n` +
-            `Folder đưa vào thùng rác: **${res.trashedFolders}** | Giữ lại: **${res.keptFolders}**`
-        });
+        let content =
+          `Undo (flatten) xong\n` +
+          `Đã kéo ra: **${res.moved}** | Lỗi: **${res.failed}**\n` +
+          `Folder đưa vào thùng rác: **${res.trashedFolders}** | Giữ lại: **${res.keptFolders}**`;
+
+        content += formatTrashFailed(res.trashFailed);
+
+        if (res.trashFailed?.some(x => /insufficient|permission|forbidden|cannot/i.test(x.reason))) {
+          content += `\n\nGợi ý: Shared Drive thường cần quyền Manager/Organizer để trash folder.`;
+        }
+
+        return itx.editReply({ content });
       }
     }
   } catch (err) {
